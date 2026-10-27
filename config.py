@@ -11,7 +11,11 @@ GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", "13ndQsSmBsKlHjIRQR0S0MO5BPq
 GOOGLE_SHEET_TAB_DATA: str = os.getenv("GOOGLE_SHEET_TAB_DATA", "DanhSachXe").strip()
 GOOGLE_SHEET_TAB_VENDOR: str = os.getenv("GOOGLE_SHEET_TAB_VENDOR", "VENDOR").strip()
 
-# Google Service Account Credentials
+# Option 1: Google Apps Script Web App URL (KHÔNG CẦN TẠO CREDENTIALS GOOGLE CLOUD)
+# Chỉ cần vào Tiện ích mở rộng -> Apps Script trên Sheet và triển khai Web App
+GOOGLE_APPS_SCRIPT_URL: str = os.getenv("GOOGLE_APPS_SCRIPT_URL", "").strip()
+
+# Option 2: Google Service Account Credentials (Dành cho tài khoản Google Cloud)
 # Can be provided via:
 # 1. Environment variable GOOGLE_SERVICE_ACCOUNT_JSON (raw JSON string or base64)
 # 2. File path via GOOGLE_SERVICE_ACCOUNT_FILE (e.g., 'service_account.json')
