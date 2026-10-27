@@ -421,53 +421,145 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def cmd_vehicle_or_plate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def find_matching_vendors(
+    query: str, vendors: List[str]
+) -> Tuple[Optional[str], Optional[int], List[Tuple[str, int]]]:
     """
-    Handler for commands like /50E65375, /61H13200, /xe 50E65375, /tim 50E65375
+    Search for vendor by query (exact match, normalized match without spaces, or substring match).
+    Returns (matched_vendor, vendor_index, list_of_partial_matches)
     """
-    if not is_authorized(update):
+    q_raw = query.strip()
+    if not q_raw:
+        return None, None, []
+
+    q_clean = re.sub(r"\s+", " ", q_raw).lower()
+    q_condensed = re.sub(r"[\s\-_.]+", "", q_raw).upper()
+
+    # 1. Exact match (case-insensitive or condensed without spaces)
+    for idx, v in enumerate(vendors):
+        v_clean = re.sub(r"\s+", " ", v).lower()
+        v_condensed = re.sub(r"[\s\-_.]+", "", v).upper()
+        if q_clean == v_clean or q_condensed == v_condensed:
+            return v, idx, []
+
+    # 2. Substring match
+    matches = []
+    for idx, v in enumerate(vendors):
+        v_clean = re.sub(r"\s+", " ", v).lower()
+        v_condensed = re.sub(r"[\s\-_.]+", "", v).upper()
+        if q_clean in v_clean or q_condensed in v_condensed or v_clean in q_clean:
+            matches.append((v, idx))
+
+    if len(matches) == 1:
+        return matches[0][0], matches[0][1], []
+
+    return None, None, matches
+
+
+async def show_vendor_vehicle_list(update: Update, vendor_name: str, vendor_idx: int, page: int = 0):
+    """Display vehicle list for a given vendor in chat."""
+    vehicles = await sheets_manager.get_vehicles_by_vendor(vendor_name)
+    if not vehicles:
+        buttons = [
+            [InlineKeyboardButton(f"➕ Thêm xe vào {vendor_name[:15]}", callback_data=f"add_v_idx:{vendor_idx}")],
+            [InlineKeyboardButton("🏢 Xem danh sách Vendor", callback_data="v_l:0")],
+        ]
+        text = (
+            f"🏢 *VENDOR: {vendor_name}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Hiện chưa có xe nào thuộc Vendor này.\n"
+            f"Bạn có thể bấm nút bên dưới để thêm xe mới:"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
-    msg_text = update.message.text.strip()
-    # Extract plate: if starts with /xe or /tim, extract following text. Otherwise strip leading slash.
-    if msg_text.lower().startswith(("/xe", "/tim")):
-        parts = msg_text.split(maxsplit=1)
-        plate_candidate = parts[1].strip() if len(parts) > 1 else ""
-    elif msg_text.startswith("/"):
-        plate_candidate = msg_text[1:].strip()
-    else:
-        plate_candidate = msg_text.strip()
-
-    await handle_search_plate(update, context, plate_candidate)
+    markup = build_vehicle_list_markup(vehicles, vendor_name, vendor_idx, page=page)
+    text = (
+        f"🏢 *VENDOR: {vendor_name}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Tổng số: *{len(vehicles)}* xe\n\n"
+        f"👉 *Bấm vào biển số xe để xem chi tiết và cập nhật:*"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
 
 
-async def handle_search_plate(update: Update, context: ContextTypes.DEFAULT_TYPE, plate_query: str):
-    """Search for a plate in Google Sheets and display card with update buttons."""
-    norm = normalize_plate(plate_query)
-    if not norm:
-        await update.message.reply_text("⚠️ Vui lòng nhập biển số xe hợp lệ (Ví dụ: `50E65375` hoặc `/50E65375`).", parse_mode="Markdown")
+async def handle_plate_or_vendor_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
+    """
+    Auto-detect whether user input is:
+    1. A vendor name (e.g. 'TRANCO', 'tranco', 'AN THANH PHAT') -> Show all vehicles of this vendor!
+    2. A license plate (e.g. '50E65375', '50E-653.75', '61H13200') -> Show vehicle details & update buttons!
+    3. Multiple matching vendors -> Show quick choice buttons!
+    4. Unrecognized -> Show helpful suggestions.
+    """
+    clean_q = query_text.strip()
+    if not clean_q:
         return
 
-    # Clear pending states
+    # Clear pending editing states
     context.user_data.pop(STATE_EDITING, None)
 
-    record = await sheets_manager.get_vehicle_by_plate(norm)
-    if not record:
+    # Check 1: Does it match a Vendor name?
+    vendors = await sheets_manager.get_all_vendors()
+    matched_v, v_idx, partial_matches = find_matching_vendors(clean_q, vendors)
+
+    if matched_v and v_idx is not None:
+        await show_vendor_vehicle_list(update, matched_v, v_idx)
+        return
+
+    # If multiple vendors match (e.g. user typed 'PHAT')
+    if partial_matches:
+        buttons = []
+        row = []
+        for v_name, idx in partial_matches[:8]:
+            row.append(InlineKeyboardButton(f"🏢 {v_name}", callback_data=f"v_s:{idx}:0"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("🏢 Xem tất cả Vendor", callback_data="v_l:0")])
+
+        await update.message.reply_text(
+            f"🔍 *Tìm thấy {len(partial_matches)} vendor phù hợp với '{clean_q}':*\n"
+            f"Vui lòng chọn vendor bạn muốn xem:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    # Check 2: Does it match an existing license plate?
+    norm_plate = normalize_plate(clean_q)
+    record = await sheets_manager.get_vehicle_by_plate(norm_plate)
+    if record:
+        card = build_vehicle_card(record)
+        markup = build_vehicle_action_markup(record["so_xe"])
+        await update.message.reply_text(card, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    # Check 3: If looks like a plate format (e.g. 50E12345 or 61H-12345) but not found
+    if re.match(r"^\d{2}[A-Z0-9]{4,8}$", norm_plate, re.IGNORECASE):
         buttons = [
-            [InlineKeyboardButton(f"➕ Thêm mới xe {norm}", callback_data=f"add_prefilled:{norm}")],
+            [InlineKeyboardButton(f"➕ Thêm mới xe {norm_plate}", callback_data=f"add_prefilled:{norm_plate}")],
             [InlineKeyboardButton("🏢 Xem danh sách Vendor", callback_data="v_l:0")],
         ]
         await update.message.reply_text(
-            f"🔍 *Không tìm thấy* xe có biển số `{plate_query}` trong Google Sheet.\n"
+            f"🔍 *Không tìm thấy* xe có biển số `{clean_q}` trong Google Sheet.\n"
             f"Bạn có muốn thêm mới xe này vào hệ thống không?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
         return
 
-    card = build_vehicle_card(record)
-    markup = build_vehicle_action_markup(record["so_xe"])
-    await update.message.reply_text(card, parse_mode="Markdown", reply_markup=markup)
+    # Unrecognized
+    await update.message.reply_text(
+        f"❓ Bot chưa nhận diện được: `{clean_q}`\n\n"
+        "💡 *Bạn có thể gõ:*\n"
+        "• **Tên Vendor** (Ví dụ: `TRANCO`, `AN THANH PHAT`, `NHAT SON`) để xem danh sách xe\n"
+        "• **Biển số xe** (Ví dụ: `50E65375` hoặc `/50E65375`) để tra cứu & cập nhật\n"
+        "• Hoặc gõ `/vendor` để xem tất cả Vendor",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(),
+    )
 
 
 # -------------------------------------------------------------
@@ -913,22 +1005,21 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(card, parse_mode="Markdown", reply_markup=markup)
         return
 
-    # --- 4. Search Plate Lookup ---
-    # Check if text looks like a vehicle plate (e.g. 50E65375, 50E-653.75, 61H13200, 51C 71417)
-    norm = normalize_plate(text)
-    if re.match(r"^\d{2}[A-Z0-9]{4,8}$", norm, re.IGNORECASE):
-        await handle_search_plate(update, context, text)
-        return
+    # --- 4. Auto-detect Vendor name or License plate ---
+    await handle_plate_or_vendor_query(update, context, text)
 
-    # If unmatched text
-    await update.message.reply_text(
-        f"❓ Bot chưa nhận diện được yêu cầu: `{text}`\n\n"
-        "• Gõ `/vendor` để xem danh sách Vendor\n"
-        "• Gõ `/add \"TÊN VENDOR\"` để thêm xe mới\n"
-        "• Gõ biển số xe (Ví dụ: `50E65375` hoặc `/50E65375`) để tra cứu & cập nhật",
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(),
-    )
+
+async def cmd_dynamic_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles any dynamic slash command such as:
+    /TRANCO, /tranco, /AN_THANH_PHAT, /50E65375, /61H13200
+    """
+    if not is_authorized(update):
+        return
+    raw_cmd = update.message.text.strip().lstrip("/")
+    # Support commands with underscore like /AN_THANH_PHAT -> 'AN THANH PHAT'
+    query_text = raw_cmd.replace("_", " ").strip()
+    await handle_plate_or_vendor_query(update, context, query_text)
 
 
 def register_handlers(app: Application):
@@ -938,16 +1029,10 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler(["sync", "refresh"], cmd_sync))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(CommandHandler(["xe", "tim"], cmd_vehicle_or_plate))
+    app.add_handler(CommandHandler(["xe", "tim"], cmd_dynamic_dispatch))
 
-    # Pattern for direct plate commands like /50E65375 or /61H13200
-    # Telegram commands match letters, digits and underscores
-    app.add_handler(
-        MessageHandler(
-            filters.COMMAND & filters.Regex(r"^/\d{2}[a-zA-Z0-9_]+$"),
-            cmd_vehicle_or_plate,
-        )
-    )
+    # Catch-all for any other slash command (e.g. /TRANCO, /50E65375)
+    app.add_handler(MessageHandler(filters.COMMAND, cmd_dynamic_dispatch))
 
     # Callback Query Handler
     app.add_handler(CallbackQueryHandler(handle_callback_query))

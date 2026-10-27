@@ -7,7 +7,10 @@ import asyncio
 from io import StringIO
 from typing import List, Dict, Any, Optional, Tuple
 
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
 
 try:
     import gspread
