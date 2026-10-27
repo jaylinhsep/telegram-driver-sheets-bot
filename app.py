@@ -23,6 +23,20 @@ logger = logging.getLogger("driver_sheets_bot")
 tg_app: Optional[Application] = None
 
 
+async def background_sync_worker():
+    """Silently refreshes cache in background so user requests never block."""
+    while True:
+        try:
+            await asyncio.sleep(300)  # Refresh every 5 minutes
+            logger.info("🔄 [Background Worker] Đang đồng bộ ngầm dữ liệu Google Sheet...")
+            await sheets_manager.sync_data(force=True)
+            logger.info("✅ [Background Worker] Đồng bộ ngầm hoàn tất!")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"⚠️ [Background Worker] Lỗi đồng bộ ngầm: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -30,7 +44,8 @@ async def lifespan(app: FastAPI):
     1. Connects to Google Sheets & pre-loads cache
     2. Initializes Telegram Application
     3. Configures Webhook or Polling mode
-    4. Handles graceful shutdown
+    4. Starts background sync worker
+    5. Handles graceful shutdown
     """
     global tg_app
     logger.info("🚀 Đang khởi động Telegram Driver Sheets Bot...")
@@ -45,7 +60,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Lỗi khởi tạo Google Sheets: {e}", exc_info=True)
 
-    # 2. Initialize Telegram bot if token is configured
+    # 2. Start background worker for silent periodic sync
+    sync_task = asyncio.create_task(background_sync_worker())
+
+    # 3. Initialize Telegram bot if token is configured
     if config.TELEGRAM_BOT_TOKEN:
         try:
             tg_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -87,6 +105,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown logic
     logger.info("🛑 Đang dừng Telegram bot...")
+    sync_task.cancel()
     if tg_app:
         try:
             if tg_app.updater and tg_app.updater.running:

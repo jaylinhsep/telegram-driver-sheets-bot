@@ -249,13 +249,15 @@ class GoogleSheetsManager:
             return True, msg
 
     async def get_all_vendors(self) -> List[str]:
-        """Get sorted list of all unique vendors."""
-        await self.sync_data(force=False)
+        """Get sorted list of all unique vendors directly from RAM cache (instant response)."""
+        if not self._cached_vendors:
+            await self.sync_data(force=False)
         return self._cached_vendors
 
     async def get_vehicles_by_vendor(self, vendor_name: str) -> List[Dict[str, Any]]:
-        """Get all vehicle records for a given vendor name (case-insensitive)."""
-        await self.sync_data(force=False)
+        """Get all vehicle records for a given vendor name directly from RAM cache (instant response)."""
+        if not self._cached_vehicles:
+            await self.sync_data(force=False)
         v_target = vendor_name.strip().lower()
         return [
             v
@@ -264,8 +266,9 @@ class GoogleSheetsManager:
         ]
 
     async def get_vehicle_by_plate(self, plate: str) -> Optional[Dict[str, Any]]:
-        """Get vehicle record matching the normalized plate."""
-        await self.sync_data(force=False)
+        """Get vehicle record matching the normalized plate directly from RAM cache (instant response)."""
+        if not self._cached_vehicles:
+            await self.sync_data(force=False)
         norm = normalize_plate(plate)
         if not norm:
             return None
